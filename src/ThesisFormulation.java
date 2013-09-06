@@ -142,7 +142,7 @@ public class ThesisFormulation {
 
         availability_table = avail_table_parser("avail.dat");
 
-        assert(num_of_edges == availability_table.length);
+        assert(num_of_vertex == availability_table.length);
         assert(num_of_freq  == availability_table[0].length);
         
         try 
@@ -150,28 +150,25 @@ public class ThesisFormulation {
             IloCplex cplex = new IloCplex();
            
             /* Decision variables */
-            IloIntVar[]   edges = new IloIntVar[num_of_edges];
-            IloIntVar[]   vertexes = new IloIntVar[num_of_vertex];
-            IloIntVar[][] vert_tslot = new IloIntVar[num_of_vertex][num_of_timeslot];
+            IloIntVar[][] et = new IloIntVar[num_of_edges][num_of_timeslot];
+            IloIntVar[][] vt = new IloIntVar[num_of_vertex][num_of_timeslot];
             
             
             /* initialize variables */
             
             for (int i = 0; i < num_of_edges; ++i)
             {
-                edges[i] = cplex.intVar(0, 1, "edges[" + i + "]");
-            }
-            
-            for (int i = 0; i < num_of_vertex; ++i)
-            {
-                vertexes[i] = cplex.intVar(0, 1, "vertexes[" + i + "]");
+                for (int t = 0; t < num_of_timeslot; ++t)
+                {
+                    et[i][t] = cplex.intVar(0, 1, "et["+ i + "][" + t + "]");                    
+                }
             }
             
             for (int i = 0; i < num_of_vertex; ++i)
             {
                 for (int t = 0; t < num_of_timeslot; ++t)
                 {
-                    vert_tslot[i][t] = cplex.intVar(0, 1, "vert_tslot["+ i + "][" + t + "]");
+                    vt[i][t] = cplex.intVar(0, 1, "vt["+ i + "][" + t + "]");
                 }
             }
             
@@ -183,7 +180,7 @@ public class ThesisFormulation {
             {
                 for (int t = 0; t < num_of_timeslot; ++t)
                 {
-                    obj.addTerm(1, vert_tslot[i][t]);
+                    obj.addTerm(1, vt[i][t]);
                 }
             }
             
@@ -191,86 +188,120 @@ public class ThesisFormulation {
             
             /* constraints */
             
-            cplex.addEq(1, vertexes[0]); /* source must be selected */
-            cplex.addEq(1, vertexes[num_of_vertex - 1]); /* destination must be selected */
-            
-            /* add source vertex edge constraint */
+            /* source must be selected for a timeslot */
             {
-                IloLinearIntExpr sum_of_edge = cplex.linearIntExpr(0);
+                IloLinearIntExpr sum_of_ts = cplex.linearIntExpr(0);
+                for (int t = 0; t < num_of_timeslot; ++t)
+                {
+                    sum_of_ts.addTerm(1, vt[0][t]);
+                }
+                cplex.addEq(1, sum_of_ts);
+            }
+            
+            /* destination must be selected for a timeslot */
+            {
+                IloLinearIntExpr sum_of_ts = cplex.linearIntExpr(0);
+                for (int t = 0; t < num_of_timeslot; ++t)
+                {
+                    sum_of_ts.addTerm(1, vt[num_of_vertex - 1][t]);
+                }
+                cplex.addEq(1, sum_of_ts);
+            }
+            
+            /* add source and destination vertex edge constraint */
+            for (int t = 0; t < num_of_timeslot; ++t)
+            {
                 for (int i = 0; i < num_of_edges; ++i)
                 {
+                    /* source */
                     if (g.has_edge(0, i))
                     {
-                        sum_of_edge.addTerm(1, edges[g.get_edge_index(0, i)]);
+                        cplex.addEq(vt[0][t], et[g.get_edge_index(0, i)][t]);
                     }
-                }
-                cplex.addEq(vertexes[0], sum_of_edge);
-            }
-            
-            /* add destination vertex edge constraint */
-            {
-                IloLinearIntExpr sum_of_edge = cplex.linearIntExpr(0);
-                for (int i = 0; i < num_of_edges; ++i)
-                {
+                    
+                    /* dest */
                     if (g.has_edge(i, num_of_edges - 1))
                     {
-                        sum_of_edge.addTerm(1, edges[g.get_edge_index(i, num_of_edges - 1)]);
+                        cplex.addEq(vt[num_of_edges - 1][t], 
+                                        et[g.get_edge_index(i, num_of_edges - 1)][t]);
                     }
                 }
-                cplex.addEq(vertexes[num_of_edges - 1], sum_of_edge);
             }
+            
+            /* all internal nodes can talk with exactly one node in one timeslot */
+            for (int i = 1; i < num_of_vertex - 1; ++i)
+            {
+                /* for a timeslot */
+                for (int t = 0; t < num_of_timeslot; ++t)
+                {
+                    IloLinearIntExpr sum_of_edges = cplex.linearIntExpr(0);
+                    /* find neighbourhood */
+                    for (int j = 0; j < num_of_vertex; ++j)
+                    {
+                        /* in & outgoing edges */
+                        if (g.has_edge(i, j))
+                        {
+                            sum_of_edges.addTerm(1, et[g.get_edge_index(i, j)][t]);
+                            sum_of_edges.addTerm(1, et[g.get_edge_index(j, i)][t]);
+                        }
+                    }
+                    cplex.addLe(sum_of_edges, 1);
+                }
+            }
+            
+            
             
             /* add internal vertexes edge constraints */
             
-            for (int i = 1; i < num_of_vertex - 1; ++i)
-            {
-                int factor = 1;
-                IloLinearIntExpr sum_of_edge = cplex.linearIntExpr(0);
-                IloLinearIntExpr negate_sum_of_edge = cplex.linearIntExpr(0);
-                IloLinearIntExpr forced_to_zero = cplex.linearIntExpr(0);
-                
-                IloLinearIntExpr minus_one_minus_vertex = cplex.linearIntExpr(0);
-                IloLinearIntExpr vertex_minus_one = cplex.linearIntExpr(0);
-                
-                /* -1 - v[i] */
-                minus_one_minus_vertex.addTerm(-1, cplex.intVar(1, 1));
-                minus_one_minus_vertex.addTerm(-1, vertexes[i]);
-                
-                /* v[i] - 1 */
-                vertex_minus_one.addTerm( 1, vertexes[i]);
-                vertex_minus_one.addTerm(-1, cplex.intVar(1, 1));
-                
-                /* for i.th edge */
-                for (int j = 0; j < num_of_vertex; ++j)
-                {
-                    if (g.has_edge(i, j))
-                    {
-                        sum_of_edge.addTerm(1, edges[g.get_edge_index(i, j)]);
-                        negate_sum_of_edge.addTerm(-1, edges[g.get_edge_index(i, j)]);
-                        forced_to_zero.addTerm(factor, edges[g.get_edge_index(i, j)]);
-                        
-                        factor *= -1; /* toggle between -1 and 1 */
-                    }
-                }
-                
-                /* sum_of_edge <= 2 */
-                cplex.addLe(sum_of_edge, 2);
-                
-                /* sum_of_edge can be only ( 0 or 2 )*/
-                cplex.addEq(forced_to_zero, 0);
-                
-                /* -1 - v[i] <= -sum_of_edge */
-                cplex.addLe(minus_one_minus_vertex, negate_sum_of_edge);
-                
-                /* sum_of_edge - 1 */
-                sum_of_edge.addTerm(-1, cplex.intVar(1, 1));
-                
-                /* v[i] - 1 <= sum_of_edge - 1 */
-                cplex.addLe(vertex_minus_one, sum_of_edge);
-            } /* end of internal vertex edge constraints */
+//            for (int i = 1; i < num_of_vertex - 1; ++i)
+//            {
+//                int factor = 1;
+//                IloLinearIntExpr sum_of_edge = cplex.linearIntExpr(0);
+//                IloLinearIntExpr negate_sum_of_edge = cplex.linearIntExpr(0);
+//                IloLinearIntExpr forced_to_zero = cplex.linearIntExpr(0);
+//                
+//                IloLinearIntExpr minus_one_minus_vertex = cplex.linearIntExpr(0);
+//                IloLinearIntExpr vertex_minus_one = cplex.linearIntExpr(0);
+//                
+//                /* -1 - v[i] */
+//                minus_one_minus_vertex.addTerm(-1, cplex.intVar(1, 1));
+//                minus_one_minus_vertex.addTerm(-1, vertexes[i]);
+//                
+//                /* v[i] - 1 */
+//                vertex_minus_one.addTerm( 1, vertexes[i]);
+//                vertex_minus_one.addTerm(-1, cplex.intVar(1, 1));
+//                
+//                /* for i.th edge */
+//                for (int j = 0; j < num_of_vertex; ++j)
+//                {
+//                    if (g.has_edge(i, j))
+//                    {
+//                        sum_of_edge.addTerm(1, edges[g.get_edge_index(i, j)]);
+//                        negate_sum_of_edge.addTerm(-1, edges[g.get_edge_index(i, j)]);
+//                        forced_to_zero.addTerm(factor, edges[g.get_edge_index(i, j)]);
+//                        
+//                        factor *= -1; /* toggle between -1 and 1 */
+//                    }
+//                }
+//                
+//                /* sum_of_edge <= 2 */
+//                cplex.addLe(sum_of_edge, 2);
+//                
+//                /* sum_of_edge can be only ( 0 or 2 )*/
+//                cplex.addEq(forced_to_zero, 0);
+//                
+//                /* -1 - v[i] <= -sum_of_edge */
+//                cplex.addLe(minus_one_minus_vertex, negate_sum_of_edge);
+//                
+//                /* sum_of_edge - 1 */
+//                sum_of_edge.addTerm(-1, cplex.intVar(1, 1));
+//                
+//                /* v[i] - 1 <= sum_of_edge - 1 */
+//                cplex.addLe(vertex_minus_one, sum_of_edge);
+//            } /* end of internal vertex edge constraints */
             
             /* source vertex is active in 0.th time slot */
-            cplex.addEq(1, vert_tslot[0][0]); /* source must be selected */
+            //cplex.addEq(1, vt[0][0]); /* source must be selected */
             
             /* source and destination vertex time slot constraint */
             {
@@ -279,8 +310,8 @@ public class ThesisFormulation {
                 
                 for (int t = 0; t < num_of_timeslot; ++t)
                 {
-                    s_sum_of_tslot.addTerm(1, vert_tslot[0][t]);
-                    d_sum_of_tslot.addTerm(1, vert_tslot[num_of_vertex - 1][t]);
+                    s_sum_of_tslot.addTerm(1, vt[0][t]);
+                    d_sum_of_tslot.addTerm(1, vt[num_of_vertex - 1][t]);
                     
                 }
                 cplex.addEq(vertexes[0], s_sum_of_tslot);
@@ -288,40 +319,40 @@ public class ThesisFormulation {
             }
             
             /* internal nodes timeslot allocation */
-            {
-                for (int i = 1; i < num_of_vertex - 1; ++i)
-                {
-                    IloLinearIntExpr sum_of_tslot = cplex.linearIntExpr(0);
-                    IloLinearIntExpr two_times_v  = cplex.linearIntExpr(0);
-
-                    for (int t = 0; t < num_of_timeslot; ++t)
-                    {
-                        sum_of_tslot.addTerm(1, vert_tslot[i][t]);
-                    }
-                    
-                    two_times_v.addTerm(2, vertexes[i]);
-                    cplex.addEq(two_times_v, sum_of_tslot);
-                }
-            }
+//            {
+//                for (int i = 1; i < num_of_vertex - 1; ++i)
+//                {
+//                    IloLinearIntExpr sum_of_tslot = cplex.linearIntExpr(0);
+//                    IloLinearIntExpr two_times_v  = cplex.linearIntExpr(0);
+//
+//                    for (int t = 0; t < num_of_timeslot; ++t)
+//                    {
+//                        sum_of_tslot.addTerm(1, vert_tslot[i][t]);
+//                    }
+//                    
+//                    two_times_v.addTerm(2, vertexes[i]);
+//                    cplex.addEq(two_times_v, sum_of_tslot);
+//                }
+//            }
             
-            for (int i = 0; i < num_of_vertex; ++i)
-            {
-                for (int j = 0; j < num_of_vertex; ++j)
-                {
-                    if (g.is_vertexes_adj(i, j) == 1)
-                    {
-                        IloLinearIntExpr k = cplex.linearIntExpr(0);
-                        
-                        for (int t = 0; t < num_of_timeslot; ++t)
-                        {
-                            k.addTerm(1, vert_tslot[i][t]);
-                            k.addTerm(1, vert_tslot[j][t]);
-                        }
-                        
-                        cplex.addEq(1, k);
-                    }
-                }
-            }
+//            for (int i = 0; i < num_of_vertex; ++i)
+//            {
+//                for (int j = 0; j < num_of_vertex; ++j)
+//                {
+//                    if (g.is_vertexes_adj(i, j) == 1)
+//                    {
+//                        IloLinearIntExpr k = cplex.linearIntExpr(0);
+//                        
+//                        for (int t = 0; t < num_of_timeslot; ++t)
+//                        {
+//                            k.addTerm(1, vert_tslot[i][t]);
+//                            k.addTerm(1, vert_tslot[j][t]);
+//                        }
+//                        
+//                        cplex.addEq(1, k);
+//                    }
+//                }
+//            }
             
             
             if (cplex.solve())
@@ -343,7 +374,7 @@ public class ThesisFormulation {
                 {
                     for (int t = 0; t < num_of_timeslot; ++t)
                     {
-                        cplex.output().println("vert_tslot[" + i + "][" + t + "] = " + cplex.getValue(vert_tslot[i][t]));
+                        cplex.output().println("vert_tslot[" + i + "][" + t + "] = " + cplex.getValue(vt[i][t]));
                     }
                 }
             }
